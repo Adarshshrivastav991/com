@@ -25,6 +25,8 @@ dependencies:
   google_generative_ai: ^0.0.1-dev  # Older version compatible with http 0.13.6
   http: ^0.13.6  # Your existing version
     # Your other existing dependencies...
+  lottie: ^2.0.0
+  shimmer: ^2.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
