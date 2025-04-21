@@ -1,4 +1,3 @@
-// home_screen.dart
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -7,7 +6,6 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-
 import 'package:provider/provider.dart';
 
 import 'auth_service.dart';
@@ -23,48 +21,95 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoading = false;
   String? _classificationResult;
   String? _confidence;
+  String? _explanation; // Added for explanation
   List<Map<String, dynamic>> _history = [];
+  final String _geminiApiKey = 'YOUR_GEMINI_API_KEY'; // Replace with your actual API key
 
-  @override
-  void initState() {
-    super.initState();
-    _loadHistory();
-  }
+  // ... (keep all your existing methods until _callGeminiAPI)
 
-  Future<void> _loadHistory() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+  Future<Map<String, dynamic>> _callGeminiAPI(File imageFile) async {
+    try {
+      // Read image bytes and convert to base64
+      final imageBytes = await imageFile.readAsBytes();
+      final base64Image = base64Encode(imageBytes);
 
-    final snapshot = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('classifications')
-        .orderBy('timestamp', descending: true)
-        .limit(10)
-        .get();
+      // Prepare the API request
+      final url = Uri.parse(
+          'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=$_geminiApiKey');
 
-    setState(() {
-      _history = snapshot.docs.map((doc) => doc.data()).toList();
-    });
-  }
+      final headers = {
+        'Content-Type': 'application/json',
+      };
 
-  Future<void> _getImage(ImageSource source) async {
-    final pickedFile = await picker.pickImage(source: source);
-    if (pickedFile != null) {
-      setState(() {
-        _image = File(pickedFile.path);
-        _classificationResult = null;
+      final body = jsonEncode({
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": """
+                Analyze this waste item image and determine if it's compostable or not. 
+                Consider:
+                - Organic materials (food scraps, yard waste) are compostable
+                - Plastics, metals, glass are not compostable
+                - Contaminated items are not compostable
+                
+                Return response in JSON format:
+                {
+                  "label": "Compostable" or "Not Compostable",
+                  "confidence": "High", "Medium", or "Low",
+                  "explanation": "Brief explanation"
+                }
+                """
+              },
+              {
+                "inlineData": {
+                  "mimeType": "image/jpeg",
+                  "data": base64Image
+                }
+              }
+            ]
+          }
+        ]
       });
+
+      // Make the HTTP request
+      final response = await http.post(url, headers: headers, body: body);
+
+      if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body);
+        final text = responseData['candidates'][0]['content']['parts'][0]['text'];
+
+        try {
+          // Parse the JSON response from Gemini
+          final jsonResponse = jsonDecode(text);
+          return {
+            'label': jsonResponse['label'] ?? 'Unknown',
+            'confidence': jsonResponse['confidence'] ?? 'Medium',
+            'explanation': jsonResponse['explanation'] ?? 'No explanation',
+          };
+        } catch (e) {
+          // Fallback if JSON parsing fails
+          return {
+            'label': text.contains('Compostable') ? 'Compostable' : 'Not Compostable',
+            'confidence': 'Medium',
+            'explanation': 'Gemini response: $text',
+          };
+        }
+      } else {
+        throw Exception('API request failed with status ${response.statusCode}');
+      }
+    } catch (e) {
+      throw Exception('Failed to call Gemini API: $e');
     }
   }
 
+  // Update the _classifyImage method to include explanation
   Future<void> _classifyImage() async {
     if (_image == null) return;
 
     setState(() => _isLoading = true);
 
     try {
-      // Upload image to Firebase Storage
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
 
@@ -75,10 +120,8 @@ class _HomeScreenState extends State<HomeScreen> {
       await storageRef.putFile(_image!);
       final imageUrl = await storageRef.getDownloadURL();
 
-      // Call Cloud Vision API (or your custom ML model)
-      final result = await _callVisionAPI(imageUrl);
+      final result = await _callGeminiAPI(_image!);
 
-      // Save to Firestore
       await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -87,17 +130,17 @@ class _HomeScreenState extends State<HomeScreen> {
         'imageUrl': imageUrl,
         'result': result['label'],
         'confidence': result['confidence'],
+        'explanation': result['explanation'],
         'timestamp': FieldValue.serverTimestamp(),
       });
 
-      // Update UI
       setState(() {
         _classificationResult = result['label'];
         _confidence = result['confidence'];
+        _explanation = result['explanation'];
         _isLoading = false;
       });
 
-      // Refresh history
       _loadHistory();
     } catch (e) {
       print('Error: $e');
@@ -108,44 +151,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<Map<String, dynamic>> _callVisionAPI(String imageUrl) async {
-    // This is a placeholder for your actual API call
-    // For Google Cloud Vision, you would need to set up the API properly
-
-    // Simulate API call with a mock response
-    await Future.delayed(Duration(seconds: 2));
-
-    // Mock response - replace with actual API call
-    final random = DateTime.now().millisecond % 2;
-    return {
-      'label': random == 0 ? 'Compostable' : 'Not Compostable',
-      'confidence': (70 + DateTime.now().millisecond % 30).toString(),
-    };
-
-    // Actual implementation would look something like this:
-    /*
-    final apiKey = 'YOUR_GOOGLE_CLOUD_API_KEY';
-    final url = 'https://vision.googleapis.com/v1/images:annotate?key=$apiKey';
-
-    final response = await http.post(
-      Uri.parse(url),
-      body: jsonEncode({
-        'requests': [
-          {
-            'image': {'source': {'imageUri': imageUrl}},
-            'features': [
-              {'type': 'LABEL_DETECTION', 'maxResults': 5}
-            ]
-          }
-        ]
-      }),
-    );
-
-    final data = jsonDecode(response.body);
-    // Process the response to determine if the waste is compostable
-    */
-  }
-
+  // Update the build method to show explanation
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -165,53 +171,8 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Upload Waste Image',
-              style: Theme.of(context).textTheme.titleLarge,
-              textAlign: TextAlign.center,
-            ),
-            SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton.icon(
-                  icon: Icon(Icons.camera_alt),
-                  label: Text('Camera'),
-                  onPressed: () => _getImage(ImageSource.camera),
-                ),
-                ElevatedButton.icon(
-                  icon: Icon(Icons.photo_library),
-                  label: Text('Gallery'),
-                  onPressed: () => _getImage(ImageSource.gallery),
-                ),
-              ],
-            ),
-            SizedBox(height: 20),
-            if (_image != null)
-              Column(
-                children: [
-                  Container(
-                    height: 200,
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey),
-                      borderRadius: BorderRadius.circular(8.0),
-                    ),
-                    child: Image.file(_image!, fit: BoxFit.cover),
-                  ),
-                  SizedBox(height: 20),
-                  if (!_isLoading)
-                    ElevatedButton(
-                      onPressed: _classifyImage,
-                      child: Text('Classify Waste'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        padding: EdgeInsets.symmetric(vertical: 16.0),
-                      ),
-                    )
-                  else
-                    CircularProgressIndicator(),
-                ],
-              ),
+            // ... (keep all your existing UI code until the result display)
+
             if (_classificationResult != null)
               Column(
                 children: [
@@ -245,8 +206,16 @@ class _HomeScreenState extends State<HomeScreen> {
                           Padding(
                             padding: const EdgeInsets.only(top: 8.0),
                             child: Text(
-                              'Confidence: ${_confidence}%',
+                              'Confidence: ${_confidence}',
                               style: TextStyle(fontSize: 16),
+                            ),
+                          ),
+                        if (_explanation != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8.0),
+                            child: Text(
+                              _explanation!,
+                              style: TextStyle(fontSize: 14, fontStyle: FontStyle.italic),
                             ),
                           ),
                       ],
@@ -254,29 +223,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-            SizedBox(height: 30),
-            Text(
-              'Recent Classifications',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            SizedBox(height: 10),
-            if (_history.isEmpty)
-              Text('No classification history yet.')
-            else
-              Column(
-                children: _history.map((item) => ListTile(
-                  leading: item['imageUrl'] != null
-                      ? Image.network(item['imageUrl'], width: 50, height: 50, fit: BoxFit.cover)
-                      : Icon(Icons.photo),
-                  title: Text(item['result'] ?? 'Unknown'),
-                  subtitle: Text('Confidence: ${item['confidence'] ?? 'N/A'}%'),
-                  trailing: Text(
-                    item['timestamp'] != null
-                        ? '${DateTime.now().difference((item['timestamp'] as Timestamp).toDate()).inDays}d ago'
-                        : '',
-                  ),
-                )).toList(),
-              ),
+
+            // ... (keep the rest of your existing UI code)
           ],
         ),
       ),

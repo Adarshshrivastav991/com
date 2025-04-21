@@ -8,14 +8,13 @@ environment:
 
 dependencies:
   flutter:
-    sdk: flutter
+   sdk: flutter
   firebase_core: ^2.32.0
   firebase_auth: ^4.16.0
   cloud_firestore: ^4.17.5
   firebase_storage: ^11.6.5
   google_sign_in: ^6.1.0
   image_picker: ^0.8.7
-  http: ^0.13.6
   provider: ^6.0.5
   cupertino_icons: ^1.0.8
   google_maps_flutter: ^2.2.3
@@ -23,7 +22,9 @@ dependencies:
   flutter_polyline_points: ^1.0.0
   geocoding: ^2.0.5
   intl: ^0.18.1
-
+  google_generative_ai: ^0.0.1-dev  # Older version compatible with http 0.13.6
+  http: ^0.13.6  # Your existing version
+    # Your other existing dependencies...
 dev_dependencies:
   flutter_test:
     sdk: flutter
