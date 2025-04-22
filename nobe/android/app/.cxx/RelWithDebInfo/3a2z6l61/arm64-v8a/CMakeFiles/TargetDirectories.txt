@@ -1,0 +1,2 @@
+/home/adarsh-shrivastav/Desktop/com/nobe/android/app/.cxx/RelWithDebInfo/3a2z6l61/arm64-v8a/CMakeFiles/edit_cache.dir
+/home/adarsh-shrivastav/Desktop/com/nobe/android/app/.cxx/RelWithDebInfo/3a2z6l61/arm64-v8a/CMakeFiles/rebuild_cache.dir

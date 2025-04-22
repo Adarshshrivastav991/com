@@ -1,0 +1,1 @@
+/home/adarsh-shrivastav/Desktop/com/nobe/build/app/intermediates/cxx/Debug/271g5y1s/obj/arm64-v8a
