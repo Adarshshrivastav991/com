@@ -15,10 +15,11 @@ class MarketplaceProvider with ChangeNotifier {
   String get selectedFilter => _selectedFilter;
 
   MarketplaceProvider() {
-    _loadProducts();
+    loadProducts(); // Changed to public method
   }
 
-  Future<void> _loadProducts() async {
+  // Changed from _loadProducts to loadProducts (public)
+  Future<void> loadProducts() async {
     try {
       _isLoading = true;
       notifyListeners();
@@ -26,6 +27,7 @@ class MarketplaceProvider with ChangeNotifier {
       final snapshot = await FirebaseFirestore.instance
           .collection('compost_products')
           .where('isAvailable', isEqualTo: true)
+          .orderBy('createdAt', descending: true)
           .get();
 
       _products = snapshot.docs.map((doc) => CompostProduct.fromFirestore(doc)).toList();
@@ -34,6 +36,33 @@ class MarketplaceProvider with ChangeNotifier {
     } catch (e) {
       _errorMessage = 'Failed to load products. Please try again.';
       if (kDebugMode) print('Error loading products: $e');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> addProduct(Map<String, dynamic> productData) async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+
+      // Add createdAt timestamp if not provided
+      if (!productData.containsKey('createdAt')) {
+        productData['createdAt'] = FieldValue.serverTimestamp();
+      }
+
+      await FirebaseFirestore.instance
+          .collection('compost_products')
+          .add(productData);
+
+      // Refresh the product list using public method
+      await loadProducts();
+      _errorMessage = null;
+    } catch (e) {
+      _errorMessage = 'Failed to add product: $e';
+      notifyListeners();
+      rethrow;
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -72,6 +101,8 @@ class CompostProduct {
   final String sellerName;
   final String imageUrl;
   final double availableQuantity;
+  final DateTime? createdAt;
+  final bool isAvailable;
 
   CompostProduct({
     required this.id,
@@ -83,6 +114,8 @@ class CompostProduct {
     required this.sellerName,
     required this.imageUrl,
     required this.availableQuantity,
+    this.createdAt,
+    this.isAvailable = true,
   });
 
   factory CompostProduct.fromFirestore(DocumentSnapshot doc) {
@@ -97,6 +130,23 @@ class CompostProduct {
       sellerName: data['sellerName'] ?? 'Unknown Seller',
       imageUrl: data['imageUrl'] ?? '',
       availableQuantity: (data['availableQuantity'] ?? 0).toDouble(),
+      createdAt: data['createdAt']?.toDate(),
+      isAvailable: data['isAvailable'] ?? true,
     );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'name': name,
+      'type': type,
+      'description': description,
+      'pricePerKg': pricePerKg,
+      'sellerId': sellerId,
+      'sellerName': sellerName,
+      'imageUrl': imageUrl,
+      'availableQuantity': availableQuantity,
+      'isAvailable': isAvailable,
+      'createdAt': createdAt,
+    };
   }
 }
