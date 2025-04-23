@@ -1,93 +1,159 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 
-class MarketplaceProvider with ChangeNotifier {
-  List<CompostProduct> _products = [];
-  List<CompostProduct> _filteredProducts = [];
-  bool _isLoading = false;
-  String? _errorMessage;
-  String _selectedFilter = 'All';
-
-  List<CompostProduct> get compostProducts => _products;
-  List<CompostProduct> get filteredProducts => _filteredProducts;
-  bool get isLoading => _isLoading;
-  String? get errorMessage => _errorMessage;
-  String get selectedFilter => _selectedFilter;
+class MarketplaceProvider extends ChangeNotifier {
+  List<CompostProduct> compostProducts = [];
+  List<CompostProduct> filteredProducts = [];
+  bool isLoading = false;
+  String? errorMessage;
+  String selectedFilter = 'All';
+  RangeValues priceRange = const RangeValues(0, 1000);
+  bool availabilityFilter = true;
 
   MarketplaceProvider() {
-    loadProducts(); // Changed to public method
+    loadProducts();
+    _setupProductsStream();
   }
 
-  // Changed from _loadProducts to loadProducts (public)
+  StreamSubscription<QuerySnapshot>? _productsSubscription;
+
+  void _setupProductsStream() {
+    _productsSubscription = FirebaseFirestore.instance
+        .collection('products')
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .listen((snapshot) {
+      updateProductsFromSnapshot(snapshot);
+    }, onError: (error) {
+      errorMessage = 'Failed to load products: $error';
+      isLoading = false;
+      notifyListeners();
+    });
+  }
+
   Future<void> loadProducts() async {
     try {
-      _isLoading = true;
+      isLoading = true;
+      errorMessage = null;
       notifyListeners();
 
       final snapshot = await FirebaseFirestore.instance
-          .collection('compost_products')
-          .where('isAvailable', isEqualTo: true)
+          .collection('products')
           .orderBy('createdAt', descending: true)
           .get();
 
-      _products = snapshot.docs.map((doc) => CompostProduct.fromFirestore(doc)).toList();
-      _applyFilter();
-      _errorMessage = null;
+      updateProductsFromQuerySnapshot(snapshot);
     } catch (e) {
-      _errorMessage = 'Failed to load products. Please try again.';
+      errorMessage = 'Failed to load products: ${e.toString()}';
       if (kDebugMode) print('Error loading products: $e');
+      notifyListeners();
+    }
+  }
+
+  void updateProductsFromQuerySnapshot(QuerySnapshot snapshot) {
+    compostProducts = snapshot.docs.map((doc) {
+      return CompostProduct.fromFirestore(doc);
+    }).toList();
+
+    applyFilters();
+    errorMessage = null;
+    isLoading = false;
+    notifyListeners();
+  }
+
+  void updateProductsFromSnapshot(QuerySnapshot snapshot) {
+    try {
+      compostProducts = snapshot.docs.map((doc) {
+        return CompostProduct.fromFirestore(doc);
+      }).toList();
+
+      applyFilters();
+      errorMessage = null;
+    } catch (e) {
+      errorMessage = 'Failed to update products: ${e.toString()}';
     } finally {
-      _isLoading = false;
+      isLoading = false;
       notifyListeners();
     }
   }
 
   Future<void> addProduct(Map<String, dynamic> productData) async {
     try {
-      _isLoading = true;
+      isLoading = true;
       notifyListeners();
 
-      // Add createdAt timestamp if not provided
       if (!productData.containsKey('createdAt')) {
         productData['createdAt'] = FieldValue.serverTimestamp();
       }
 
       await FirebaseFirestore.instance
-          .collection('compost_products')
+          .collection('products')
           .add(productData);
 
-      // Refresh the product list using public method
-      await loadProducts();
-      _errorMessage = null;
+      // The stream will automatically update the products
+      errorMessage = null;
     } catch (e) {
-      _errorMessage = 'Failed to add product: $e';
-      notifyListeners();
+      errorMessage = 'Failed to add product: $e';
       rethrow;
     } finally {
-      _isLoading = false;
+      isLoading = false;
       notifyListeners();
     }
   }
 
   void setFilter(String filter) {
-    _selectedFilter = filter;
-    _applyFilter();
+    selectedFilter = filter;
+    applyFilters();
+  }
+
+  void setPriceRange(RangeValues range) {
+    priceRange = range;
+    applyFilters();
+  }
+
+  void setAvailabilityFilter(bool available) {
+    availabilityFilter = available;
+    applyFilters();
+  }
+
+  void applyFilters({
+    String? typeFilter,
+    RangeValues? priceRange,
+    bool? availability,
+  }) {
+    filteredProducts = compostProducts.where((product) {
+      // Type filter
+      final typeMatch = typeFilter == null ||
+          typeFilter == 'All' ||
+          product.type == typeFilter;
+
+      // Price filter
+      final priceMatch = (priceRange ?? this.priceRange).start <= product.pricePerKg &&
+          product.pricePerKg <= (priceRange ?? this.priceRange).end;
+
+      // Availability filter
+      final availabilityMatch = (availability ?? availabilityFilter)
+          ? product.isAvailable
+          : true;
+
+      return typeMatch && priceMatch && availabilityMatch;
+    }).toList();
+
     notifyListeners();
   }
 
-  void _applyFilter() {
-    if (_selectedFilter == 'All') {
-      _filteredProducts = List.from(_products);
-    } else {
-      _filteredProducts = _products
-          .where((product) => product.type == _selectedFilter)
-          .toList();
-    }
+  List<String> get productTypes {
+    final types = compostProducts.map((p) => p.type).toSet().toList();
+    return ['All', ...types];
   }
 
-  List<String> get productTypes {
-    final types = _products.map((p) => p.type).toSet().toList();
-    return ['All', ...types];
+  @override
+  void dispose() {
+    _productsSubscription?.cancel();
+    super.dispose();
   }
 }
 
@@ -99,10 +165,13 @@ class CompostProduct {
   final double pricePerKg;
   final String sellerId;
   final String sellerName;
+  final String sellerEmail;
   final String imageUrl;
-  final double availableQuantity;
-  final DateTime? createdAt;
+  final String? imagePath;
+  final int availableQuantity;
   final bool isAvailable;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
 
   CompostProduct({
     required this.id,
@@ -112,10 +181,13 @@ class CompostProduct {
     required this.pricePerKg,
     required this.sellerId,
     required this.sellerName,
+    required this.sellerEmail,
     required this.imageUrl,
+    this.imagePath,
     required this.availableQuantity,
+    required this.isAvailable,
     this.createdAt,
-    this.isAvailable = true,
+    this.updatedAt,
   });
 
   factory CompostProduct.fromFirestore(DocumentSnapshot doc) {
@@ -128,10 +200,13 @@ class CompostProduct {
       pricePerKg: (data['pricePerKg'] ?? 0).toDouble(),
       sellerId: data['sellerId'] ?? '',
       sellerName: data['sellerName'] ?? 'Unknown Seller',
+      sellerEmail: data['sellerEmail'] ?? '',
       imageUrl: data['imageUrl'] ?? '',
-      availableQuantity: (data['availableQuantity'] ?? 0).toDouble(),
-      createdAt: data['createdAt']?.toDate(),
+      imagePath: data['imagePath'],
+      availableQuantity: (data['availableQuantity'] ?? 0).toInt(),
       isAvailable: data['isAvailable'] ?? true,
+      createdAt: data['createdAt']?.toDate(),
+      updatedAt: data['updatedAt']?.toDate(),
     );
   }
 
@@ -143,10 +218,13 @@ class CompostProduct {
       'pricePerKg': pricePerKg,
       'sellerId': sellerId,
       'sellerName': sellerName,
+      'sellerEmail': sellerEmail,
       'imageUrl': imageUrl,
+      'imagePath': imagePath,
       'availableQuantity': availableQuantity,
       'isAvailable': isAvailable,
       'createdAt': createdAt,
+      'updatedAt': updatedAt,
     };
   }
 }

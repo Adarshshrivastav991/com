@@ -1,11 +1,9 @@
 import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:provider/provider.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'marketplace_provider.dart';
 
 class UploadProductScreen extends StatefulWidget {
   const UploadProductScreen({Key? key}) : super(key: key);
@@ -19,6 +17,7 @@ class _UploadProductScreenState extends State<UploadProductScreen> {
   final ImagePicker _picker = ImagePicker();
   XFile? _imageFile;
   String? _imageUrl;
+  String? _imagePath;
 
   // Form fields
   String _name = '';
@@ -39,42 +38,61 @@ class _UploadProductScreenState extends State<UploadProductScreen> {
 
   Future<void> _pickImage() async {
     try {
-      final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 85,
+      );
       if (image != null) {
         setState(() {
           _imageFile = image;
         });
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to pick image: $e')),
-      );
+      _showError('Failed to pick image: ${e.toString()}');
     }
   }
 
-  Future<String?> _uploadImage() async {
+  Future<String?> _uploadImage(String productId) async {
     if (_imageFile == null) return null;
 
     try {
-      final storageRef = FirebaseStorage.instance
-          .ref()
-          .child('compost_images/${DateTime.now().millisecondsSinceEpoch}');
-      await storageRef.putFile(File(_imageFile!.path));
+      // Create reference with product ID
+      _imagePath = 'compost_images/$productId.jpg';
+      final storageRef = FirebaseStorage.instance.ref().child(_imagePath!);
+
+      // Upload with metadata
+      final metadata = SettableMetadata(
+        contentType: 'image/jpeg',
+        customMetadata: {
+          'uploadedBy': FirebaseAuth.instance.currentUser?.uid ?? '',
+          'timestamp': DateTime.now().toString(),
+        },
+      );
+
+      await storageRef.putFile(
+        File(_imageFile!.path),
+        metadata,
+      );
+
+      // Get download URL
       return await storageRef.getDownloadURL();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to upload image: $e')),
-      );
+      _showError('Failed to upload image: ${e.toString()}');
       return null;
     }
   }
 
   Future<void> _submitForm() async {
     if (!_formKey.currentState!.validate()) return;
-
     _formKey.currentState!.save();
 
-    final provider = Provider.of<MarketplaceProvider>(context, listen: false);
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _showError('You must be logged in to upload products');
+      return;
+    }
 
     try {
       // Show loading indicator
@@ -84,50 +102,102 @@ class _UploadProductScreenState extends State<UploadProductScreen> {
         builder: (context) => const Center(child: CircularProgressIndicator()),
       );
 
+      // Create product document reference first
+      final productRef = FirebaseFirestore.instance.collection('products').doc();
+
       // Upload image if selected
       if (_imageFile != null) {
-        _imageUrl = await _uploadImage();
+        _imageUrl = await _uploadImage(productRef.id);
       }
 
-      // Create product data
+      // Prepare product data
       final productData = {
         'name': _name,
         'type': _type,
         'description': _description,
         'pricePerKg': _pricePerKg,
-        'sellerId': 'currentUserId', // Replace with actual user ID
-        'sellerName': 'Current User', // Replace with actual user name
+        'sellerId': user.uid,
+        'sellerName': user.displayName ?? 'Anonymous Seller',
+        'sellerEmail': user.email,
         'imageUrl': _imageUrl,
+        'imagePath': _imagePath, // Store the storage path for deletion later
         'availableQuantity': _availableQuantity,
         'isAvailable': _isAvailable,
-        'createdAt': Timestamp.now(),
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
       };
 
-      // Add product through provider
-      await provider.addProduct(productData);
+      // Validate data matches security rules
+      if (_pricePerKg <= 0 || _availableQuantity <= 0) {
+        throw Exception('Price and quantity must be positive numbers');
+      }
+
+      // Save to Firestore
+      await productRef.set(productData);
 
       // Close loading dialog
-      Navigator.of(context).pop();
+      if (mounted) Navigator.of(context).pop();
 
-      // Show success message
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Product uploaded successfully!')),
-      );
-
-      // Navigate back to marketplace
-      Navigator.of(context).pop();
+      // Show success and reset form
+      _showSuccess('Product uploaded successfully!');
+      _resetForm();
     } catch (e) {
-      // Close loading dialog
-      Navigator.of(context).pop();
+      // Clean up failed upload
+      if (_imagePath != null) {
+        await FirebaseStorage.instance.ref().child(_imagePath!).delete().catchError((e) {});
+      }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to upload product: $e')),
-      );
+      if (mounted) Navigator.of(context).pop();
+      _showError('Failed to upload product: ${e.toString()}');
     }
+  }
+
+  void _resetForm() {
+    setState(() {
+      _formKey.currentState?.reset();
+      _imageFile = null;
+      _imageUrl = null;
+      _imagePath = null;
+      _name = '';
+      _type = 'Vermicompost';
+      _description = '';
+      _pricePerKg = 0.0;
+      _availableQuantity = 0;
+      _isAvailable = true;
+    });
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
+  void _showSuccess(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Upload Product')),
+        body: const Center(
+          child: Text('Please sign in to upload products'),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Upload Compost Product'),
@@ -206,6 +276,12 @@ class _UploadProductScreenState extends State<UploadProductScreen> {
                     _type = value!;
                   });
                 },
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please select a compost type';
+                  }
+                  return null;
+                },
               ),
               const SizedBox(height: 16),
 
@@ -220,6 +296,9 @@ class _UploadProductScreenState extends State<UploadProductScreen> {
                   if (value == null || value.isEmpty) {
                     return 'Please enter a description';
                   }
+                  if (value.length < 10) {
+                    return 'Description should be at least 10 characters';
+                  }
                   return null;
                 },
                 onSaved: (value) => _description = value!,
@@ -232,13 +311,17 @@ class _UploadProductScreenState extends State<UploadProductScreen> {
                   labelText: 'Price per kg (\$)',
                   border: OutlineInputBorder(),
                 ),
-                keyboardType: TextInputType.number,
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
                     return 'Please enter a price';
                   }
-                  if (double.tryParse(value) == null) {
+                  final price = double.tryParse(value);
+                  if (price == null) {
                     return 'Please enter a valid number';
+                  }
+                  if (price <= 0) {
+                    return 'Price must be greater than 0';
                   }
                   return null;
                 },
@@ -257,8 +340,12 @@ class _UploadProductScreenState extends State<UploadProductScreen> {
                   if (value == null || value.isEmpty) {
                     return 'Please enter available quantity';
                   }
-                  if (int.tryParse(value) == null) {
+                  final quantity = int.tryParse(value);
+                  if (quantity == null) {
                     return 'Please enter a valid number';
+                  }
+                  if (quantity <= 0) {
+                    return 'Quantity must be greater than 0';
                   }
                   return null;
                 },

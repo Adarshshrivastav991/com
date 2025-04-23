@@ -80,22 +80,23 @@ class _HomeScreenState extends State<HomeScreen> {
       final imageBytes = await imageFile.readAsBytes();
       final base64Image = base64Encode(imageBytes);
 
-      final prompt = """
-    Analyze this waste item image and provide results with these parameters:
-    
-    compostability=[Compostable/Not Compostable]
-    confidence=[High/Medium/Low]
-    category=[Compostable/Recyclable/Landfill/Hazardous]
-    explanation=[Detailed technical reasoning]
-    disposal=[Specific disposal instructions]
-    misconceptions=[Common mistakes]
-    
-    Guidelines:
-    - Compostable only for: food waste, yard trimmings, uncoated paper, natural fibers
-    - Not Compostable for: plastics, metals, glass, animal products, oily items
-    - Be extremely strict about compostability
-    - Provide clear disposal instructions
-    """;
+      const prompt = """
+      Analyze this waste item image and provide a JSON response with these fields:
+      - is_compostable: boolean (true if compostable, false otherwise)
+      - confidence: string (High/Medium/Low)
+      - category: string (Compostable/Recyclable/Landfill/Hazardous)
+      - explanation: string (detailed technical reasoning)
+      - disposal: string (specific disposal instructions)
+      - misconceptions: string (common mistakes about this item)
+
+      Guidelines:
+      - Compostable only for: food waste, yard trimmings, uncoated paper, natural fibers
+      - Not Compostable for: plastics, metals, glass, animal products, oily items
+      - Be extremely strict about compostability
+      - Provide clear disposal instructions
+
+      Return ONLY the JSON object, nothing else.
+      """;
 
       final url = Uri.parse(
           'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=$_geminiApiKey');
@@ -133,7 +134,15 @@ class _HomeScreenState extends State<HomeScreen> {
       if (response.statusCode == 200) {
         final responseData = jsonDecode(response.body);
         final text = responseData['candidates'][0]['content']['parts'][0]['text'];
-        return _parsePlainTextResponse(text);
+
+        // Try to parse the response as JSON
+        try {
+          final jsonResponse = jsonDecode(text);
+          return jsonResponse;
+        } catch (e) {
+          // If parsing as JSON fails, fall back to text parsing
+          return _parsePlainTextResponse(text);
+        }
       } else {
         throw Exception('API request failed with status ${response.statusCode}');
       }
@@ -143,6 +152,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Map<String, dynamic> _parsePlainTextResponse(String text) {
+    // Default values
     final result = {
       'is_compostable': false,
       'confidence': 'Medium',
@@ -152,30 +162,47 @@ class _HomeScreenState extends State<HomeScreen> {
       'misconceptions': 'None noted'
     };
 
-    text.split('\n').forEach((line) {
-      line = line.trim();
-      if (line.startsWith('compostability=')) {
-        final value = line.substring('compostability='.length).trim();
-        result['is_compostable'] = value.toLowerCase() == 'compostable';
-      } else if (line.startsWith('confidence=')) {
-        final value = line.substring('confidence='.length).trim();
-        if (['High', 'Medium', 'Low'].contains(value)) {
-          result['confidence'] = value;
-        }
-      } else if (line.startsWith('category=')) {
-        final value = line.substring('category='.length).trim();
-        result['category'] = value;
-      } else if (line.startsWith('explanation=')) {
-        final value = line.substring('explanation='.length).trim();
-        result['explanation'] = value;
-      } else if (line.startsWith('disposal=')) {
-        final value = line.substring('disposal='.length).trim();
-        result['disposal'] = value;
-      } else if (line.startsWith('misconceptions=')) {
-        final value = line.substring('misconceptions='.length).trim();
-        result['misconceptions'] = value;
+    // Try to extract information from the text response
+    final lines = text.split('\n');
+    for (final line in lines) {
+      final trimmedLine = line.trim().toLowerCase();
+
+      if (trimmedLine.contains('compostable')) {
+        result['is_compostable'] = trimmedLine.contains('yes') ||
+            trimmedLine.contains('true') ||
+            (trimmedLine.contains('compostable') && !trimmedLine.contains('not'));
       }
-    });
+
+      if (trimmedLine.contains('confidence:')) {
+        if (trimmedLine.contains('high')) {
+          result['confidence'] = 'High';
+        } else if (trimmedLine.contains('medium')) {
+          result['confidence'] = 'Medium';
+        } else if (trimmedLine.contains('low')) {
+          result['confidence'] = 'Low';
+        }
+      }
+
+      if (trimmedLine.contains('category:')) {
+        if (trimmedLine.contains('compostable')) {
+          result['category'] = 'Compostable';
+        } else if (trimmedLine.contains('recyclable')) {
+          result['category'] = 'Recyclable';
+        } else if (trimmedLine.contains('hazardous')) {
+          result['category'] = 'Hazardous';
+        } else {
+          result['category'] = 'Landfill';
+        }
+      }
+
+      if (trimmedLine.contains('explanation:')) {
+        result['explanation'] = line.substring(line.indexOf(':') + 1).trim();
+      }
+
+      if (trimmedLine.contains('disposal:')) {
+        result['disposal'] = line.substring(line.indexOf(':') + 1).trim();
+      }
+    }
 
     return result;
   }
@@ -186,6 +213,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _isLoading = true);
 
     try {
+      // Upload image to Firebase Storage
       final storageRef = FirebaseStorage.instance
           .ref()
           .child('user_images/${widget.user.uid}/${DateTime.now().millisecondsSinceEpoch}.jpg');
@@ -193,31 +221,36 @@ class _HomeScreenState extends State<HomeScreen> {
       await storageRef.putFile(_image!);
       final imageUrl = await storageRef.getDownloadURL();
 
+      // Call Gemini API
       final result = await _callGeminiAPI(_image!);
+      print('API Response: $result'); // Debug print
 
+      // Save to Firestore
       await FirebaseFirestore.instance
           .collection('users')
           .doc(widget.user.uid)
           .collection('classifications')
           .add({
         'imageUrl': imageUrl,
-        'is_compostable': result['is_compostable'],
-        'category': result['category'],
-        'confidence': result['confidence'],
-        'explanation': result['explanation'],
-        'instructions': result['disposal'],
-        'misconceptions': result['misconceptions'],
+        'is_compostable': result['is_compostable'] ?? false,
+        'category': result['category'] ?? 'Landfill',
+        'confidence': result['confidence'] ?? 'Medium',
+        'explanation': result['explanation'] ?? 'No explanation provided',
+        'instructions': result['disposal'] ?? 'Dispose properly',
+        'misconceptions': result['misconceptions'] ?? 'None noted',
         'timestamp': FieldValue.serverTimestamp(),
       });
 
+      // Update UI
       setState(() {
-        _classificationResult = result['is_compostable'] ? 'COMPOSTABLE' : 'NOT COMPOSTABLE';
-        _confidence = result['confidence'];
-        _explanation = result['explanation'];
-        _disposalInstructions = result['disposal'];
+        _classificationResult = (result['is_compostable'] ?? false) ? 'COMPOSTABLE' : 'NOT COMPOSTABLE';
+        _confidence = result['confidence'] ?? 'Medium';
+        _explanation = result['explanation'] ?? 'No explanation provided';
+        _disposalInstructions = result['disposal'] ?? 'Dispose properly';
         _isLoading = false;
       });
 
+      // Reload history
       _loadHistory();
     } catch (e) {
       print('Error: $e');

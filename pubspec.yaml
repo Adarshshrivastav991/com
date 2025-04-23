@@ -22,6 +22,8 @@ dependencies:
   flutter_polyline_points: ^1.0.0
   geocoding: ^2.0.5
   intl: ^0.18.1
+  convert: ^3.1.1
+
   google_generative_ai: ^0.0.1-dev  # Older version compatible with http 0.13.6
   http: ^0.13.6  # Your existing version
     # Your other existing dependencies...

@@ -1,7 +1,9 @@
-import 'package:flutter/material.dart';
-import 'package:nobe/product_grid.dart';
-import 'package:provider/provider.dart';
+import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:nobe/product_grid.dart';
 import 'compost_search_delegate.dart';
 import 'filter_bar.dart';
 import 'marketplace_provider.dart';
@@ -13,19 +15,52 @@ class MarketplaceScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) => MarketplaceProvider(),
+      create: (_) => MarketplaceProvider()..loadProducts(),
       child: const MarketplaceView(),
     );
   }
 }
 
-class MarketplaceView extends StatelessWidget {
+class MarketplaceView extends StatefulWidget {
   const MarketplaceView({Key? key}) : super(key: key);
 
   @override
-  Widget build(BuildContext context) {
-    final provider = Provider.of<MarketplaceProvider>(context);
+  State<MarketplaceView> createState() => _MarketplaceViewState();
+}
 
+class _MarketplaceViewState extends State<MarketplaceView> {
+  late MarketplaceProvider _provider;
+  late StreamSubscription<QuerySnapshot>? _productsSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _provider = Provider.of<MarketplaceProvider>(context, listen: false);
+    _setupProductsStream();
+  }
+
+  void _setupProductsStream() {
+    _productsSubscription = FirebaseFirestore.instance
+        .collection('products')
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .listen((snapshot) {
+      _provider.updateProductsFromSnapshot(snapshot);
+    }, onError: (error) {
+      _provider.errorMessage = 'Failed to load products: $error';
+      _provider.isLoading = false;
+      _provider.notifyListeners();
+    });
+  }
+
+  @override
+  void dispose() {
+    _productsSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Compost Marketplace'),
@@ -39,21 +74,21 @@ class MarketplaceView extends StatelessWidget {
             icon: const Icon(Icons.search),
             onPressed: () => showSearch(
               context: context,
-              delegate: CompostSearchDelegate(provider.compostProducts),
+              delegate: CompostSearchDelegate(_provider.compostProducts),
             ),
             tooltip: 'Search products',
           ),
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: () => provider.loadProducts(), // Changed to public method
+        onRefresh: () => _provider.loadProducts(),
         child: Column(
           children: [
             const FilterBar(),
             Expanded(
               child: Consumer<MarketplaceProvider>(
                 builder: (context, provider, _) {
-                  if (provider.isLoading) {
+                  if (provider.isLoading && provider.compostProducts.isEmpty) {
                     return const Center(child: CircularProgressIndicator());
                   }
                   if (provider.errorMessage != null) {
@@ -64,7 +99,7 @@ class MarketplaceView extends StatelessWidget {
                           Text(provider.errorMessage!),
                           const SizedBox(height: 16),
                           ElevatedButton(
-                            onPressed: () => provider.loadProducts(), // Changed to public method
+                            onPressed: () => provider.loadProducts(),
                             child: const Text('Retry'),
                           ),
                         ],
@@ -91,19 +126,19 @@ class MarketplaceView extends StatelessWidget {
     );
   }
 
-  void _navigateToUploadScreen(BuildContext context) {
-    Navigator.push(
+  Future<void> _navigateToUploadScreen(BuildContext context) async {
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => ChangeNotifierProvider.value(
-          value: Provider.of<MarketplaceProvider>(context, listen: false),
+          value: _provider,
           child: const UploadProductScreen(),
         ),
         fullscreenDialog: true,
       ),
-    ).then((_) {
-      // Refresh products after returning from upload screen
-      Provider.of<MarketplaceProvider>(context, listen: false).loadProducts(); // Changed to public method
-    });
+    );
+
+    // The stream will automatically update the products
+    // No need for manual refresh
   }
 }
